@@ -1,86 +1,113 @@
 # The Artful Dodger
 
-**[Download artfuldodger-a67lg2.zip](https://github.com/CyberspaceVii/artfuldodger-a67lg2/releases/download/v0.2/artfuldodger-a67lg2.zip)**
-
-
 Screenshot `FLAG_SECURE` windows without stripping the flag.
 
 A KernelSU Next module for the **Foxxd A67L Gen 2**.
 
-Apps mark sensitive windows with `FLAG_SECURE`; SurfaceFlinger then leaves those
-layers out of normal captures, so the built-in screenshot hands back a black
-frame. Authenticators and password managers, incognito/private browsing,
-screenshot-blocking messengers, the Recents thumbnails of those apps — all of it
-comes out black. This module captures the real content and saves it to your
-gallery with the same chord you already use.
+**[Download v0.5](https://github.com/CyberspaceVii/artfuldodger-a67lg2/releases/download/v0.5/artfuldodger-a67lg2.zip)** · [Changelog](CHANGELOG.md)
 
-## How it's different
-
-Most "disable secure screen" modules remove `FLAG_SECURE` itself — hooking the
-WindowManager / SurfaceControl path so the flag never takes effect. That does
-make the stock screenshot work, but it un-secures those windows *system-wide*:
-every app's secure surfaces become ordinary ones, Recents starts caching them,
-and the change is trivially detectable.
-
-The Artful Dodger leaves `FLAG_SECURE` intact. Apps still get a genuinely secure
-window; nothing is globally un-secured. Instead it changes only the screenshot
-path, in two parts:
-
-- **Input.** A small root daemon `EVIOCGRAB`s the `gpio-keys` device and
-  re-injects every event through a `uinput` clone *except* the Power +
-  Volume-Down chord. The stock input stack never sees the chord, so the built-in
-  screenshot never runs — which is exactly why there's **no shutter sound, no
-  flash/animation and no corner preview**.
-- **Capture.** On the chord the daemon signals a Zygisk module living in
-  `system_server` — the one context allowed to — which calls the platform
-  `ScreenCapture` with secure layers enabled, then a root service files the PNG
-  into **Pictures/Screenshots**, indexes it in MediaStore, and pops a toast.
-
-The net effect is the same picture in the same place as a normal screenshot,
-only the secure layers are no longer blanked, and the secure flag itself is
-never touched.
+Press **Power + Volume Down** to capture the screen and save a PNG to
+`Pictures/Screenshots`. A toast confirms when the image has been saved and
+indexed in the gallery. Window flags stay intact, so ordinary screenshots,
+screen recordings and Recents previews still respect `FLAG_SECURE`.
 
 ## Requirements
 
-- Foxxd A67L Gen 2
-- Rooted with KernelSU Next
+- Foxxd A67L Gen 2 with KernelSU Next
+- An enabled Zygisk implementation; tested with ReZygisk
+- Foreground user 0 with credential storage unlocked
 
-The installer stops without changing anything if either is missing.
+Tested on this device's Android 16 firmware. Other devices and firmware builds
+have not been validated. The installer checks the device and KernelSU;
+[validation results](VALIDATION.md) describe the tested setup.
 
-## Install
+## Install or update
 
-1. Download [`artfuldodger-a67lg2.zip`](https://github.com/CyberspaceVii/artfuldodger-a67lg2/releases/latest/download/artfuldodger-a67lg2.zip) (latest release).
-2. KernelSU Next → Modules → Install from storage → select the zip.
+1. Download [`artfuldodger-a67lg2.zip`](https://github.com/CyberspaceVii/artfuldodger-a67lg2/releases/latest/download/artfuldodger-a67lg2.zip).
+2. In KernelSU Next, open **Modules → Install from storage** and select the ZIP.
 3. Reboot.
 
-It starts on its own at every boot. Tap the module's **Action** button in
-KernelSU Next to turn the interceptor off or back on without rebooting (off =
-the stock blacked-out screenshots return).
+Updates use the same module ID, `artfuldodger_a67lg2`. If the older Foot Fetish
+module is still installed, remove it before installing Artful Dodger. Run only
+one interceptor for this key chord.
 
-## Uninstall
+Capture starts on boot unless switched off. Tap **Action** to toggle it; the
+setting survives reboot. Enabling starts the interceptor once the capture
+worker is ready. To uninstall, remove the module in KernelSU Next and reboot.
+Uninstall removes private state and pending images; saved gallery images remain.
 
-Disable or remove the module and reboot. The grab is dropped and the key chord
-goes straight back to the stock screenshot, shutter and animation and all.
-Everything is systemless — no files under `/system` are touched — so there is
-nothing to restore.
+## Status and recovery
 
-## Scope
+From a root shell:
 
-It captures the secure layers SurfaceFlinger composites. Hardware-protected
-buffers (Widevine L1 and similar) are dropped by the compositor itself and stay
-black regardless; this device is L3. It's for imaging your own screen, not a DRM
-workaround.
+```sh
+sh /data/adb/modules/artfuldodger_a67lg2/control.sh status
+sh /data/adb/modules/artfuldodger_a67lg2/control.sh retry
+sh /data/adb/modules/artfuldodger_a67lg2/control.sh diagnostics
+```
+
+`status` shows whether capture is enabled and actually ready, the number of
+pending images, session counts, the last capture result and capture/save times.
+`on` and `off` set the capture preference explicitly. `retry` attempts to save
+pending images after a storage or gallery-indexing problem has been resolved.
+
+Failed publication keeps its private source for retry. An identical file already
+in the destination can be reindexed; a conflicting file is left alone. Pending
+images are limited to 32. Recovery saves are reported separately from the
+daemon's session counters.
+
+Diagnostics are stored under root-only `/data/adb/artfuldodger`. Event records
+contain request numbers, error codes and timings. They contain no image
+contents, app names, window titles or screen text. Event and service logs are
+rotated; idle status does not continuously write to storage.
+
+## How it works
+
+A root daemon grabs the hardware `gpio-keys` device and replays events through a
+`uinput` clone. When the capture worker is ready, it consumes a fresh Power +
+Volume-Down chord within 120 ms. Other events pass through. The consumed chord
+does not invoke the stock screenshot animation, shutter or preview.
+
+A Zygisk worker in `system_server` calls `ScreenCapture` with secure layers
+enabled. Its library unloads from app processes. The worker and daemon use a
+local sequenced-packet socket: the worker accepts UID 0, and the daemon checks
+for UID 1000. A disconnect releases interception and the supervisor retries.
+
+The worker writes a private PNG. A root helper publishes it without overwriting
+existing images and checks the MediaStore entry before acknowledging success.
+Capture compresses PNG on a dedicated `system_server` thread.
+
+## Limits
+
+Only one capture runs at a time. While busy, additional chords follow the stock
+path, which can show the usual screenshot UI or trigger an app's screenshot
+callback. The controlled test app received no official callback from custom
+captures; other detection methods have not been ruled out.
+
+Work profiles and other foreground users are unsupported. There is no separate
+screen-lock policy. Hardware-protected DRM buffers and future firmware
+compatibility have not been validated. PNG compression still runs inside
+`system_server`; the bounded stress test does not establish long-term leak
+freedom. Root and system processes are inside the trust boundary.
+
+## Build and test
+
+Run `./build.sh` with Android NDK r30. Set `NDK_DIR` if it is installed outside
+`/opt/android-ndk`. C and C++ builds use `-Wall -Wextra -Werror`.
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -g \
+    -Isource tests/native.c -o /tmp/artfuldodger-tests
+/tmp/artfuldodger-tests
+python3 tests/publisher.py
+python3 tests/control.py
+```
+
+The host tests cover input handling, IPC, publication and status reporting.
+See [VALIDATION.md](VALIDATION.md) for hardware results.
 
 ## License
 
 [WTFPL](LICENSE).
 
----
-
 CyberspaceVII · https://www.cyberspace7.org
-
-## Build
-
-Run `./build.sh` with NDK r30. Set `NDK_DIR` if the NDK is installed outside
-`/opt/android-ndk`. The capture library unloads from app processes; its watcher
-stays in system_server.
